@@ -79,30 +79,14 @@ export const deepAgent = new ToolLoopAgent({
     const todosContext = formatTodosForContext(todos);
     const scratchpadContext = formatScratchpadForContext(scratchpad);
 
-    const isAnthropicModel =
-      typeof model === "string"
-        ? model.includes("anthropic") || model.includes("claude")
-        : model.provider === "anthropic" ||
-          model.provider.includes("anthropic") ||
-          model.modelId.includes("anthropic") ||
-          model.modelId.includes("claude");
-
     return {
       ...settings,
       model,
-      instructions: {
-        role: "system",
-        content: buildSystemPrompt({
-          customInstructions,
-          todosContext,
-          scratchpadContext,
-        }),
-        ...(isAnthropicModel && {
-          providerOptions: {
-            anthropic: { cacheControl: { type: "ephemeral" } },
-          },
-        }),
-      },
+      instructions: buildSystemPrompt({
+        customInstructions,
+        todosContext,
+        scratchpadContext,
+      }),
       experimental_context: { workingDirectory },
     };
   },
