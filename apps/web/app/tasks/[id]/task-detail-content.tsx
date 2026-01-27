@@ -40,7 +40,10 @@ import { useScrollToBottom } from "@/hooks/use-scroll-to-bottom";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
 import { useAudioRecording } from "@/hooks/use-audio-recording";
 import { ACCEPT_IMAGE_TYPES, isValidImageType } from "@/lib/image-utils";
-import { DEFAULT_SANDBOX_TIMEOUT_MS } from "@/lib/sandbox/config";
+import {
+  DEFAULT_SANDBOX_TIMEOUT_MS,
+  AUTO_EXTEND_THRESHOLD_MS,
+} from "@/lib/sandbox/config";
 import type { WebAgentUIToolPart, WebAgentUIMessagePart } from "@/app/types";
 import type { TaskToolUIPart, AskUserQuestionInput } from "@open-harness/agent";
 
@@ -136,8 +139,6 @@ function useSandboxTimeRemaining(sandboxInfo: SandboxInfo | null) {
 
   return timeRemaining;
 }
-
-const WARNING_THRESHOLD_MS = 60_000; // Show warning when < 1 minute remaining
 
 function formatTokens(tokens: number): string {
   if (tokens >= 1000) {
@@ -260,17 +261,32 @@ function SandboxHeaderBadge({
   isRestoring: boolean;
   isExtending: boolean;
   timeRemaining: number | null;
-  onExtend: () => void;
+  onExtend: () => Promise<boolean>;
   onSaveAndKill: () => void;
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const hasAutoSavedRef = useRef(false);
+  const hasAutoExtendedRef = useRef(false);
+  const autoExtendRetryCountRef = useRef(0);
+  const MAX_AUTO_EXTEND_RETRIES = 3;
 
   // Reset auto-save flag when sandbox changes
   useEffect(() => {
     hasAutoSavedRef.current = false;
   }, [sandboxInfo]);
+
+  // Reset auto-extend flag when sandbox changes or time goes back up (after successful extend)
+  useEffect(() => {
+    if (
+      !sandboxInfo ||
+      timeRemaining === null ||
+      timeRemaining > AUTO_EXTEND_THRESHOLD_MS
+    ) {
+      hasAutoExtendedRef.current = false;
+      autoExtendRetryCountRef.current = 0;
+    }
+  }, [sandboxInfo, timeRemaining]);
 
   // Reset stopping state when sandbox becomes inactive
   useEffect(() => {
@@ -292,6 +308,45 @@ function SandboxHeaderBadge({
       onSaveAndKill();
     }
   }, [timeRemaining, isSavingSnapshot, onSaveAndKill]);
+
+  // Auto-extend when window is visible and time is low
+  useEffect(() => {
+    const tryAutoExtend = async () => {
+      if (
+        timeRemaining !== null &&
+        timeRemaining > 0 &&
+        timeRemaining <= AUTO_EXTEND_THRESHOLD_MS &&
+        !hasAutoExtendedRef.current &&
+        !isExtending &&
+        document.visibilityState === "visible"
+      ) {
+        hasAutoExtendedRef.current = true;
+        const success = await onExtend();
+        // Allow retry on failure, up to max retries
+        if (!success) {
+          autoExtendRetryCountRef.current += 1;
+          if (autoExtendRetryCountRef.current < MAX_AUTO_EXTEND_RETRIES) {
+            hasAutoExtendedRef.current = false;
+          }
+        }
+      }
+    };
+
+    // Check immediately
+    tryAutoExtend();
+
+    // Also check when visibility changes (user returns to tab)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        tryAutoExtend();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [timeRemaining, isExtending, onExtend]);
 
   const handleStop = () => {
     setIsStopping(true);
@@ -377,45 +432,7 @@ function SandboxHeaderBadge({
   // (we returned early for null timeout above, and the inactive check handles null/0 timeRemaining)
   if (timeRemaining === null) return null;
 
-  const isWarning = timeRemaining < WARNING_THRESHOLD_MS;
-  const secondsRemaining = Math.ceil(timeRemaining / 1000);
-
-  // Warning state - show message with extend and close buttons
-  if (isWarning) {
-    return (
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-orange-500">
-          Pausing in {secondsRemaining}s
-        </span>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onExtend}
-          disabled={isExtending}
-          className="h-6 px-2 text-xs"
-        >
-          {isExtending ? <Loader2 className="size-3 animate-spin" /> : "Extend"}
-        </Button>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={handleStop}
-              disabled={isSavingSnapshot}
-              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-            >
-              <X className="size-3.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" sideOffset={8}>
-            Save and pause
-          </TooltipContent>
-        </Tooltip>
-      </div>
-    );
-  }
-
-  // Active - show green dot with X on hover
+  // Active - show green dot with X on hover (no countdown displayed, auto-extend handles it)
   return (
     <div
       className="flex items-center gap-1"
@@ -424,11 +441,8 @@ function SandboxHeaderBadge({
     >
       <Tooltip>
         <TooltipTrigger asChild>
-          <div className="flex items-center gap-1 p-1">
+          <div className="flex items-center p-1">
             <span className="size-2.5 rounded-full bg-green-500" />
-            <span className="text-xs text-muted-foreground">
-              {secondsRemaining}s
-            </span>
           </div>
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={8}>
@@ -740,8 +754,8 @@ export function TaskDetailContent() {
     saveSnapshot,
   ]);
 
-  const handleExtendSandbox = async () => {
-    if (!sandboxInfo) return;
+  const handleExtendSandbox = useCallback(async (): Promise<boolean> => {
+    if (!sandboxInfo) return false;
     setIsExtendingSandbox(true);
     try {
       const response = await fetch("/api/sandbox/extend", {
@@ -755,7 +769,7 @@ export function TaskDetailContent() {
       if (!response.ok) {
         const error = (await response.json()) as { error?: string };
         console.error("Failed to extend sandbox:", error.error);
-        return;
+        return false;
       }
 
       const data = (await response.json()) as {
@@ -771,12 +785,14 @@ export function TaskDetailContent() {
         createdAt: now,
         timeout: data.expiresAt - now,
       });
+      return true;
     } catch (err) {
       console.error("Failed to extend sandbox:", err);
+      return false;
     } finally {
       setIsExtendingSandbox(false);
     }
-  };
+  }, [sandboxInfo, task.id, setSandboxInfo]);
 
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const isSavingSnapshotRef = useRef(false);
