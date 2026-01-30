@@ -1,21 +1,28 @@
+import { createUnifiedDiff, getLanguageFromPath } from "@open-harness/shared";
 import React from "react";
-import { createEditDiffLines } from "@open-harness/shared";
+import { useChatContext } from "../../chat-context";
 import type { ToolRendererProps } from "../../lib/render-tool";
 import { FileChangeLayout, toRelativePath } from "./shared";
-import { useChatContext } from "../../chat-context";
 
 export function EditRenderer({ part, state }: ToolRendererProps<"tool-edit">) {
   const { state: chatState } = useChatContext();
   const cwd = chatState.workingDirectory ?? process.cwd();
-  const rawFilePath = part.input?.filePath ?? "...";
+  const isInputReady = part.state !== "input-streaming";
+  const rawFilePath = isInputReady ? (part.input?.filePath ?? "...") : "...";
   const filePath =
     rawFilePath === "..." ? rawFilePath : toRelativePath(rawFilePath, cwd);
-  const oldString = part.input?.oldString ?? "";
-  const newString = part.input?.newString ?? "";
-  const { lines, additions, removals } = createEditDiffLines(
+  const oldString = isInputReady ? (part.input?.oldString ?? "") : "";
+  const newString = isInputReady ? (part.input?.newString ?? "") : "";
+  const startLine = Number(part.input?.startLine) || 1;
+  const { diff, additions, removals } = createUnifiedDiff(
     oldString,
     newString,
+    rawFilePath === "..." ? "file" : rawFilePath,
+    startLine,
   );
+  const hasChanges = additions + removals > 0;
+  const filetype =
+    rawFilePath === "..." ? undefined : getLanguageFromPath(rawFilePath);
 
   // Check for tool execution failure (success: false in output)
   const outputError =
@@ -34,7 +41,10 @@ export function EditRenderer({ part, state }: ToolRendererProps<"tool-edit">) {
       filePath={filePath}
       additions={additions}
       removals={removals}
-      lines={state.running || state.denied || outputError ? [] : lines}
+      diff={
+        state.running || state.denied || outputError || !hasChanges ? "" : diff
+      }
+      filetype={filetype}
       state={mergedState}
     />
   );

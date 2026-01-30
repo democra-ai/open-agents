@@ -1,8 +1,7 @@
-import React from "react";
-import { Text } from "ink";
 import { getToolName } from "ai";
-import type { TUIAgentUIToolPart } from "../../types";
+import React from "react";
 import type { ToolRenderState } from "../../lib/render-tool";
+import type { TUIAgentUIToolPart } from "../../types";
 import { ToolLayout } from "./shared";
 
 /**
@@ -18,14 +17,18 @@ export function DefaultRenderer({
 }) {
   const toolName = getToolName(part);
   const name = toolName.charAt(0).toUpperCase() + toolName.slice(1);
+  const summary =
+    part.state === "input-streaming"
+      ? "..."
+      : part.input
+        ? JSON.stringify(part.input)
+        : "...";
 
   return (
     <ToolLayout
       name={name}
-      summary={part.input ? JSON.stringify(part.input).slice(0, 40) : "..."}
-      output={
-        part.state === "output-available" && <Text color="white">Done</Text>
-      }
+      summary={summary}
+      output={part.state === "output-available" && <text fg="white">Done</text>}
       state={state}
     />
   );

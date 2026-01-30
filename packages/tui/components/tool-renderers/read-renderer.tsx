@@ -1,11 +1,13 @@
 import React from "react";
-import { Text } from "ink";
+import { useChatContext } from "../../chat-context";
 import type { ToolRendererProps } from "../../lib/render-tool";
 import { ToolLayout, toRelativePath } from "./shared";
 
 export function ReadRenderer({ part, state }: ToolRendererProps<"tool-read">) {
-  const cwd = process.cwd();
-  const rawFilePath = part.input?.filePath ?? "...";
+  const { state: chatState } = useChatContext();
+  const cwd = chatState.workingDirectory ?? process.cwd();
+  const isInputReady = part.state !== "input-streaming";
+  const rawFilePath = isInputReady ? (part.input?.filePath ?? "...") : "...";
   const filePath =
     rawFilePath === "..." ? rawFilePath : toRelativePath(rawFilePath, cwd);
   const lines =
@@ -14,8 +16,8 @@ export function ReadRenderer({ part, state }: ToolRendererProps<"tool-read">) {
   return (
     <ToolLayout
       name="Read"
-      summary={lines ? `${filePath} (${lines} lines)` : filePath}
-      output={lines && <Text color="white">Read {lines} lines</Text>}
+      summary={filePath}
+      output={lines && <text fg="white">Read {lines} lines</text>}
       state={state}
     />
   );

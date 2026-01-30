@@ -1,5 +1,5 @@
+import { TextAttributes } from "@opentui/core";
 import React from "react";
-import { Box, Text } from "ink";
 
 type HeaderProps = {
   name?: string;
@@ -8,29 +8,30 @@ type HeaderProps = {
   cwd?: string;
 };
 
-export function Header({ name = "AI SDK", version, model, cwd }: HeaderProps) {
+export function Header({ name, version, model, cwd }: HeaderProps) {
+  const displayName = name?.trim() ? name : "AI SDK";
   const homedir = process.env.HOME || process.env.USERPROFILE || "";
   const displayCwd =
     cwd?.replace(homedir, "~") || process.cwd().replace(homedir, "~");
 
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <box flexDirection="column" marginBottom={1} flexShrink={0}>
       {/* Info line */}
-      <Box gap={1}>
-        <Text bold>{name}</Text>
-        {version && <Text dimColor>v{version}</Text>}
+      <box gap={1} flexDirection="row">
+        <text attributes={TextAttributes.BOLD}>{displayName}</text>
+        {version && <text attributes={TextAttributes.DIM}>v{version}</text>}
         {model && (
           <>
-            <Text dimColor>·</Text>
-            <Text dimColor>{model}</Text>
+            <text attributes={TextAttributes.DIM}>·</text>
+            <text attributes={TextAttributes.DIM}>{model}</text>
           </>
         )}
-      </Box>
+      </box>
 
       {/* Working directory */}
-      <Box>
-        <Text dimColor>{displayCwd}</Text>
-      </Box>
-    </Box>
+      <box flexDirection="row">
+        <text attributes={TextAttributes.DIM}>{displayCwd}</text>
+      </box>
+    </box>
   );
 }

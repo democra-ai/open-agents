@@ -1,7 +1,10 @@
+import { TextAttributes } from "@opentui/core";
+import { useTerminalDimensions } from "@opentui/react";
 import React from "react";
-import { Box, Text } from "ink";
+import { PRIMARY_COLOR } from "../../lib/colors";
 import type { ToolRendererProps } from "../../lib/render-tool";
-import { ToolSpinner, getDotColor } from "./shared";
+import { truncateText } from "../../lib/truncate";
+import { getDotColor, ToolSpinner } from "./shared";
 
 type AskUserQuestionOutput =
   | { answers: Record<string, string | string[]> }
@@ -20,8 +23,22 @@ export function AskUserQuestionRenderer({
   part,
   state,
 }: ToolRendererProps<"tool-ask_user_question">) {
-  const questions = part.input?.questions ?? [];
+  const isInputReady = part.state !== "input-streaming";
+  const questions = isInputReady ? (part.input?.questions ?? []) : [];
   const questionCount = questions.length;
+  const questionCountLabel = isInputReady
+    ? `${questionCount} question${questionCount !== 1 ? "s" : ""}`
+    : "...";
+  const { width } = useTerminalDimensions();
+  const terminalWidth = width ?? 80;
+  const linePrefixLength = "└ ".length + "· ".length;
+  const separatorLength = " → ".length;
+  const availableWidth = Math.max(
+    10,
+    terminalWidth - linePrefixLength - separatorLength,
+  );
+  const questionWidth = Math.max(10, Math.floor(availableWidth * 0.6));
+  const answerWidth = Math.max(10, availableWidth - questionWidth);
 
   // Extract output when available with proper runtime validation
   const output =
@@ -32,44 +49,35 @@ export function AskUserQuestionRenderer({
   const isDeclined = output && "declined" in output && output.declined;
   const hasAnswers = output && "answers" in output;
 
-  // Use yellow dot when waiting for user input (like approval-requested tools)
+  // Use primary dot when waiting for user input (like approval-requested tools)
   const isWaitingForInput = part.state === "input-available";
   const isGenerating = part.state === "input-streaming";
   const dotColor =
     state.denied || isDeclined
       ? "red"
       : isWaitingForInput
-        ? "yellow"
+        ? PRIMARY_COLOR
         : getDotColor(state);
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
-      <Box>
-        {isGenerating ? <ToolSpinner /> : <Text color={dotColor}>● </Text>}
-        <Text bold color={state.denied || isDeclined ? "red" : "white"}>
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
+      <box flexDirection="row">
+        {isGenerating ? <ToolSpinner /> : <text fg={dotColor}>● </text>}
+        <text
+          fg={state.denied || isDeclined ? "red" : "white"}
+          attributes={TextAttributes.BOLD}
+        >
           Ask User Question
-        </Text>
-        <Text color="gray">(</Text>
-        <Text color="white">
-          {questionCount} question{questionCount !== 1 ? "s" : ""}
-        </Text>
-        <Text color="gray">)</Text>
-      </Box>
-
-      {/* Show generating status while streaming input */}
-      {isGenerating && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="gray">Generating questions...</Text>
-        </Box>
-      )}
+        </text>
+        <text fg="gray"> · </text>
+        <text fg="gray">{questionCountLabel}</text>
+      </box>
 
       {/* Show waiting status when input is ready and awaiting user response */}
       {isWaitingForInput && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="gray">Waiting for user input...</Text>
-        </Box>
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">Waiting for input</text>
+        </box>
       )}
 
       {/* Show summary when output available and user answered */}
@@ -77,41 +85,42 @@ export function AskUserQuestionRenderer({
         hasAnswers &&
         !state.denied &&
         "answers" in output && (
-          <Box flexDirection="column" paddingLeft={2}>
-            {questions.map((q, idx) => {
+          <box flexDirection="column" paddingLeft={2}>
+            {questions.map((q) => {
               if (!q || !q.question) return null;
               const answer = output.answers[q.question];
               const answerText = Array.isArray(answer)
                 ? answer.join(", ")
                 : answer;
-              const isFirst = idx === 0;
+              const displayQuestion = truncateText(q.question, questionWidth);
+              const displayAnswer = truncateText(
+                answerText ?? "No answer",
+                answerWidth,
+              );
               return (
-                <Box key={q.question}>
-                  <Text color="gray">{isFirst ? "└ " : "  "}</Text>
-                  <Text color="gray">· </Text>
-                  <Text color="white">{q.question}</Text>
-                  <Text color="gray"> → </Text>
-                  <Text color="green">{answerText ?? "No answer"}</Text>
-                </Box>
+                <box key={q.question} flexDirection="row">
+                  <text fg="gray">· </text>
+                  <text fg="white">{displayQuestion}</text>
+                  <text fg="gray">: </text>
+                  <text fg="green">{displayAnswer}</text>
+                </box>
               );
             })}
-          </Box>
+          </box>
         )}
 
       {/* Show declined message */}
       {part.state === "output-available" && isDeclined && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">User declined to answer</Text>
-        </Box>
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="red">User declined to answer</text>
+        </box>
       )}
 
       {state.denied && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">Cancelled</Text>
-        </Box>
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="red">Cancelled</text>
+        </box>
       )}
-    </Box>
+    </box>
   );
 }

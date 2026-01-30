@@ -1,10 +1,14 @@
 /**
  * Shared components and utilities for tool renderers.
  */
-import React, { useState, useEffect, type ReactNode } from "react";
-import { Box, Text } from "ink";
-import type { DiffLine, CodeLine } from "@open-harness/shared";
+
+import { TextAttributes } from "@opentui/core";
+import { useTerminalDimensions } from "@opentui/react";
+import React, { type ReactNode, useEffect, useState } from "react";
+import { cliSyntaxStyle, cliTreeSitterClient } from "../../lib/code-theme";
+import { PRIMARY_COLOR } from "../../lib/colors";
 import type { ToolRenderState } from "../../lib/render-tool";
+import { truncateText } from "../../lib/truncate";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -18,7 +22,7 @@ export function ToolSpinner() {
     return () => clearInterval(timer);
   }, []);
 
-  return <Text color="yellow">{SPINNER_FRAMES[frame]} </Text>;
+  return <text fg={PRIMARY_COLOR}>{SPINNER_FRAMES[frame]} </text>;
 }
 
 /**
@@ -26,8 +30,9 @@ export function ToolSpinner() {
  */
 export function getDotColor(state: ToolRenderState): string {
   if (state.denied) return "red";
-  if (state.approvalRequested) return "yellow";
-  if (state.running) return "yellow";
+  if (state.interrupted) return PRIMARY_COLOR;
+  if (state.approvalRequested) return PRIMARY_COLOR;
+  if (state.running) return PRIMARY_COLOR;
   if (state.error) return "red";
   return "green";
 }
@@ -47,52 +52,83 @@ export function ToolLayout({
   state: ToolRenderState;
 }) {
   const dotColor = getDotColor(state);
+  const indicator = state.running ? (
+    <ToolSpinner />
+  ) : state.interrupted ? (
+    <text fg={PRIMARY_COLOR}>○ </text>
+  ) : (
+    <text fg={dotColor}>● </text>
+  );
+  const { width } = useTerminalDimensions();
+  const terminalWidth = width ?? 80;
+  const headerPrefixLength = 2 + name.length + 1;
+  const headerSuffixLength = 1;
+  const maxSummaryWidth = Math.max(
+    10,
+    terminalWidth - headerPrefixLength - headerSuffixLength,
+  );
+  const displaySummary = truncateText(summary, maxSummaryWidth);
+  const errorPrefix = "Error: ";
+  const maxErrorWidth = Math.max(10, terminalWidth - 2 - errorPrefix.length);
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
-      <Box>
-        {state.running ? <ToolSpinner /> : <Text color={dotColor}>● </Text>}
-        <Text bold color={state.denied ? "red" : "white"}>
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
+      <box flexDirection="row">
+        {indicator}
+        <text
+          fg={state.denied ? "red" : "white"}
+          attributes={TextAttributes.BOLD}
+        >
           {name}
-        </Text>
-        <Text color="gray">(</Text>
-        <Text color="white">{summary}</Text>
-        <Text color="gray">)</Text>
-      </Box>
+        </text>
+        <text fg="gray">(</text>
+        <text fg="white">{displaySummary}</text>
+        <text fg="gray">)</text>
+      </box>
 
       {/* Show Running/Waiting status for approval-requested tools */}
       {state.approvalRequested && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="gray">
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="gray">
             {state.isActiveApproval ? "Running…" : "Waiting…"}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
 
-      {output && !state.approvalRequested && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
+      {output && !state.approvalRequested && !state.interrupted && (
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
           {output}
-        </Box>
+        </box>
       )}
 
       {state.denied && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="red">
             Denied{state.denialReason ? `: ${state.denialReason}` : ""}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
 
       {state.error && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">Error: {state.error.slice(0, 80)}</Text>
-        </Box>
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="red">
+            {errorPrefix}
+            {truncateText(state.error, maxErrorWidth)}
+          </text>
+        </box>
       )}
-    </Box>
+
+      {state.interrupted && (
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg={PRIMARY_COLOR}>Interrupted</text>
+        </box>
+      )}
+    </box>
   );
 }
 
@@ -104,125 +140,115 @@ export function FileChangeLayout({
   filePath,
   additions,
   removals,
-  lines,
+  diff,
+  filetype,
   state,
 }: {
   action: "Create" | "Update";
   filePath: string;
   additions: number;
   removals: number;
-  lines: DiffLine[];
+  diff: string;
+  filetype?: string;
   state: ToolRenderState;
 }) {
   const dotColor = getDotColor(state);
-  const maxWidth = 80;
+  const { width } = useTerminalDimensions();
+  const terminalWidth = width ?? 80;
+  const headerPrefixLength = 2 + action.length + 1;
+  const headerSuffixLength = 1;
+  const maxHeaderPathWidth = Math.max(
+    10,
+    terminalWidth - headerPrefixLength - headerSuffixLength,
+  );
+  const displayHeaderPath = truncateText(filePath, maxHeaderPathWidth);
+  const errorPrefix = "Error: ";
+  const maxErrorWidth = Math.max(10, terminalWidth - 2 - errorPrefix.length);
   const showDiff =
     state.approvalRequested ||
-    (!state.running && !state.error && !state.denied);
+    (!state.running && !state.error && !state.denied && !state.interrupted);
+  const indicator = state.running ? (
+    <ToolSpinner />
+  ) : state.interrupted ? (
+    <text fg={PRIMARY_COLOR}>○ </text>
+  ) : (
+    <text fg={dotColor}>● </text>
+  );
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
       {/* Header: ● Update(src/tui/lib/markdown.ts) */}
-      <Box>
-        {state.running ? <ToolSpinner /> : <Text color={dotColor}>● </Text>}
-        <Text bold color="white">
+      <box flexDirection="row">
+        {indicator}
+        <text fg="white" attributes={TextAttributes.BOLD}>
           {action}
-        </Text>
-        <Text color="gray">(</Text>
-        <Text color="white">{filePath}</Text>
-        <Text color="gray">)</Text>
-      </Box>
+        </text>
+        <text fg="gray">(</text>
+        <text fg="white">{displayHeaderPath}</text>
+        <text fg="gray">)</text>
+        <text fg="#7ee787"> +{additions}</text>
+        <text fg="#ff7b72"> -{removals}</text>
+      </box>
 
       {/* Show Running/Waiting status for approval-requested tools */}
       {state.approvalRequested && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="gray">
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="gray">
             {state.isActiveApproval ? "Running…" : "Waiting…"}
-          </Text>
-        </Box>
-      )}
-
-      {/* Subheader: └ Updated src/file.ts with X additions and Y removals */}
-      {showDiff && !state.approvalRequested && !state.denied && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text>{action === "Create" ? "Created" : "Updated"} </Text>
-          <Text bold>{filePath}</Text>
-          <Text> with </Text>
-          <Text color="green">
-            {additions} addition{additions !== 1 ? "s" : ""}
-          </Text>
-          <Text> and </Text>
-          <Text color="red">
-            {removals} removal{removals !== 1 ? "s" : ""}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
 
       {/* Diff lines */}
-      {showDiff &&
-        !state.approvalRequested &&
-        !state.denied &&
-        lines.length > 0 && (
-          <Box flexDirection="column" paddingLeft={4}>
-            {lines.map((line, i) => (
-              <Box key={i}>
-                {line.type === "separator" ? (
-                  <Text color="gray">{line.content}</Text>
-                ) : (
-                  <>
-                    {/* Line number */}
-                    <Text color="gray">
-                      {line.lineNumber !== undefined
-                        ? String(line.lineNumber).padStart(4, " ")
-                        : "    "}{" "}
-                    </Text>
-
-                    {/* +/- indicator and content */}
-                    {line.type === "addition" ? (
-                      <>
-                        <Text backgroundColor="#234823">+ </Text>
-                        <Text backgroundColor="#234823">
-                          {line.content.slice(0, maxWidth)}
-                        </Text>
-                      </>
-                    ) : line.type === "removal" ? (
-                      <>
-                        <Text backgroundColor="#5c2626">- </Text>
-                        <Text backgroundColor="#5c2626">
-                          {line.content.slice(0, maxWidth)}
-                        </Text>
-                      </>
-                    ) : (
-                      <>
-                        <Text color="gray"> </Text>
-                        <Text>{line.content.slice(0, maxWidth)}</Text>
-                      </>
-                    )}
-                  </>
-                )}
-              </Box>
-            ))}
-          </Box>
-        )}
+      {showDiff && !state.approvalRequested && !state.denied && diff && (
+        <box flexDirection="column" paddingLeft={4}>
+          <diff
+            diff={diff}
+            filetype={filetype}
+            syntaxStyle={cliSyntaxStyle}
+            treeSitterClient={cliTreeSitterClient}
+            view="unified"
+            wrapMode="char"
+            showLineNumbers={true}
+            lineNumberFg="#6b7280"
+            addedBg="#244d32"
+            removedBg="#4f2626"
+            addedLineNumberBg="#244d32"
+            removedLineNumberBg="#4f2626"
+            addedSignColor="#7ee787"
+            removedSignColor="#ff7b72"
+            width="100%"
+          />
+        </box>
+      )}
 
       {state.denied && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="red">
             Denied{state.denialReason ? `: ${state.denialReason}` : ""}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
 
       {state.error && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">Error: {state.error.slice(0, 80)}</Text>
-        </Box>
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="red">
+            {errorPrefix}
+            {truncateText(state.error, maxErrorWidth)}
+          </text>
+        </box>
       )}
-    </Box>
+
+      {state.interrupted && (
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg={PRIMARY_COLOR}>Interrupted</text>
+        </box>
+      )}
+    </box>
   );
 }
 
@@ -231,97 +257,136 @@ export function FileChangeLayout({
  */
 export function NewFileLayout({
   filePath,
-  lines,
+  content,
+  filetype,
   totalLines,
   hiddenLines,
   state,
 }: {
   filePath: string;
-  lines: CodeLine[];
+  content: string;
+  filetype?: string;
   totalLines: number;
   hiddenLines: number;
   state: ToolRenderState;
 }) {
   const dotColor = getDotColor(state);
+  const { width } = useTerminalDimensions();
+  const terminalWidth = width ?? 80;
+  const headerPrefixLength = 2 + "Create".length + 1;
+  const headerSuffixLength = 1;
+  const maxHeaderPathWidth = Math.max(
+    10,
+    terminalWidth - headerPrefixLength - headerSuffixLength,
+  );
+  const displayHeaderPath = truncateText(filePath, maxHeaderPathWidth);
+  const lineSuffix = ` (${totalLines} line${totalLines !== 1 ? "s" : ""})`;
+  const subPrefixLength = "└ ".length + "Created ".length;
+  const maxSubPathWidth = Math.max(
+    10,
+    terminalWidth - subPrefixLength - lineSuffix.length,
+  );
+  const displaySubPath = truncateText(filePath, maxSubPathWidth);
+  const errorPrefix = "Error: ";
+  const maxErrorWidth = Math.max(10, terminalWidth - 2 - errorPrefix.length);
   const showCode =
     state.approvalRequested ||
-    (!state.running && !state.error && !state.denied);
+    (!state.running && !state.error && !state.denied && !state.interrupted);
+  const indicator = state.running ? (
+    <ToolSpinner />
+  ) : state.interrupted ? (
+    <text fg={PRIMARY_COLOR}>○ </text>
+  ) : (
+    <text fg={dotColor}>● </text>
+  );
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
       {/* Header: ● Create(src/file.ts) */}
-      <Box>
-        {state.running ? <ToolSpinner /> : <Text color={dotColor}>● </Text>}
-        <Text bold color="white">
+      <box flexDirection="row">
+        {indicator}
+        <text fg="white" attributes={TextAttributes.BOLD}>
           Create
-        </Text>
-        <Text color="gray">(</Text>
-        <Text color="white">{filePath}</Text>
-        <Text color="gray">)</Text>
-      </Box>
+        </text>
+        <text fg="gray">(</text>
+        <text fg="white">{displayHeaderPath}</text>
+        <text fg="gray">)</text>
+      </box>
 
       {/* Show Running/Waiting status for approval-requested tools */}
       {state.approvalRequested && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="gray">
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="gray">
             {state.isActiveApproval ? "Running…" : "Waiting…"}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
 
       {/* Subheader: └ Created src/file.ts (N lines) */}
       {showCode && !state.approvalRequested && !state.denied && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text>Created </Text>
-          <Text bold>{filePath}</Text>
-          <Text color="gray">
-            {" "}
-            ({totalLines} line{totalLines !== 1 ? "s" : ""})
-          </Text>
-        </Box>
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text>Created </text>
+          <text attributes={TextAttributes.BOLD}>{displaySubPath}</text>
+          <text fg="gray">{lineSuffix}</text>
+        </box>
       )}
 
       {/* Code preview with syntax highlighting */}
       {showCode &&
         !state.approvalRequested &&
         !state.denied &&
-        lines.length > 0 && (
-          <Box
+        content.length > 0 && (
+          <box
             flexDirection="column"
             marginLeft={2}
-            borderStyle="round"
+            borderStyle="rounded"
             borderColor="gray"
-            paddingX={1}
+            paddingLeft={1}
+            paddingRight={1}
           >
-            {lines.map((line, i) => (
-              <Text key={i}>{line.highlighted}</Text>
-            ))}
+            <code
+              content={content}
+              filetype={filetype}
+              syntaxStyle={cliSyntaxStyle}
+              treeSitterClient={cliTreeSitterClient}
+              width="100%"
+            />
             {hiddenLines > 0 && (
-              <Text color="gray">
+              <text fg="gray">
                 ... {hiddenLines} more line{hiddenLines !== 1 ? "s" : ""}
-              </Text>
+              </text>
             )}
-          </Box>
+          </box>
         )}
 
       {state.denied && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="red">
             Denied{state.denialReason ? `: ${state.denialReason}` : ""}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
 
       {state.error && (
-        <Box paddingLeft={2}>
-          <Text color="gray">└ </Text>
-          <Text color="red">Error: {state.error.slice(0, 80)}</Text>
-        </Box>
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg="red">
+            {errorPrefix}
+            {truncateText(state.error, maxErrorWidth)}
+          </text>
+        </box>
       )}
-    </Box>
+
+      {state.interrupted && (
+        <box paddingLeft={2} flexDirection="row">
+          <text fg="gray">└ </text>
+          <text fg={PRIMARY_COLOR}>Interrupted</text>
+        </box>
+      )}
+    </box>
   );
 }
 

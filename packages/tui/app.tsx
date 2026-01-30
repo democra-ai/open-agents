@@ -1,37 +1,54 @@
-import React, { useEffect, useState, useCallback, useMemo, memo } from "react";
-import { Box, Text, useApp, useInput } from "ink";
-import { isToolUIPart, getToolName, type FileUIPart } from "ai";
 import { useChat } from "@ai-sdk/react";
+import type { AskUserQuestionInput, TaskToolUIPart } from "@open-harness/agent";
+import { defaultModelLabel } from "@open-harness/agent";
 import {
-  useReasoningContext,
   useExpandedView,
+  useReasoningContext,
   useTodoView,
 } from "@open-harness/shared";
-import { renderMarkdown } from "./lib/markdown";
+import type { ScrollBoxRenderable, Selection } from "@opentui/core";
+import { TextAttributes } from "@opentui/core";
+import {
+  useKeyboard,
+  useRenderer,
+  useTerminalDimensions,
+} from "@opentui/react";
+import { type FileUIPart, getToolName, isToolUIPart } from "ai";
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useChatContext } from "./chat-context";
-import { ToolCall, getToolApprovalInfo } from "./components/tool-call";
-import { toolMatchesApprovalRule } from "./lib/approval";
 import { ApprovalPanel } from "./components/approval-panel";
-import { QuestionPanel } from "./components/question-panel";
-import { SettingsPanel } from "./components/settings-panel";
-import { ResumePanel } from "./components/resume-panel";
-import { TaskGroupView } from "./components/task-group-view";
-import { StatusBar, StandaloneTodoList } from "./components/status-bar";
-import { InputBox } from "./components/input-box";
 import { Header } from "./components/header";
-import { defaultModelLabel } from "@open-harness/agent";
-import type { SlashCommandAction } from "./lib/slash-commands";
+import { InputBox } from "./components/input-box";
+import { QuestionPanel } from "./components/question-panel";
+import { ResumePanel } from "./components/resume-panel";
+import { SettingsPanel } from "./components/settings-panel";
+import { StandaloneTodoList, StatusBar } from "./components/status-bar";
+import { TaskGroupView } from "./components/task-group-view";
+import { getToolApprovalInfo, ToolCall } from "./components/tool-call";
 import { pasteCollapseLineThreshold } from "./config";
-import { extractTodosFromLastAssistantMessage } from "./utils/extract-todos";
+import { toolMatchesApprovalRule } from "./lib/approval";
+import { PRIMARY_COLOR } from "./lib/colors";
+import { inputFromKey } from "./lib/keyboard";
+import { MarkdownContent } from "./lib/markdown";
 import { listSessions, loadSession } from "./lib/session-storage";
 import type { SessionListItem } from "./lib/session-types";
+import type { SlashCommandAction } from "./lib/slash-commands";
+import { copyTextToClipboard } from "./lib/text-clipboard";
+import { wrapMarkdown } from "./lib/wrap-markdown";
 import type {
-  TUIOptions,
-  TUIAgentUIMessagePart,
   TUIAgentUIMessage,
+  TUIAgentUIMessagePart,
   TUIAgentUIToolPart,
+  TUIOptions,
 } from "./types";
-import type { TaskToolUIPart, AskUserQuestionInput } from "@open-harness/agent";
+import { extractTodosFromLastAssistantMessage } from "./utils/extract-todos";
 
 type AppProps = {
   options: TUIOptions;
@@ -48,30 +65,35 @@ function formatTime(date: Date): string {
 const TextPart = memo(function TextPart({
   text,
   isExpanded,
+  isStreaming,
   timestamp,
   model,
 }: {
   text: string;
   isExpanded?: boolean;
+  isStreaming?: boolean;
   timestamp?: Date;
   model?: string;
 }) {
-  const rendered = useMemo(() => renderMarkdown(text), [text]);
-
+  const { width } = useTerminalDimensions();
+  const terminalWidth = width ?? 80;
+  const bulletWidth = 2;
+  const maxContentWidth = Math.max(10, terminalWidth - bulletWidth);
+  const displayText = wrapMarkdown(text, maxContentWidth);
   return (
-    <Box>
-      <Text>● </Text>
-      <Box flexShrink={1} flexGrow={1}>
-        <Text>{rendered}</Text>
-      </Box>
+    <box flexDirection="row">
+      <text>●</text>
+      <box marginLeft={1} flexShrink={1} flexGrow={1}>
+        <MarkdownContent content={displayText} streaming={isStreaming} />
+      </box>
       {isExpanded && timestamp && model && (
-        <Box marginLeft={2} flexShrink={0}>
-          <Text color="gray">
+        <box marginLeft={2} flexShrink={0} flexDirection="row">
+          <text fg="gray">
             {formatTime(timestamp)} {model}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
-    </Box>
+    </box>
   );
 });
 
@@ -140,16 +162,16 @@ const ThinkingPart = memo(function ThinkingPart({
   isComplete: boolean;
 }) {
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
-      <Text color="gray" italic>
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
+      <text fg="gray" attributes={TextAttributes.ITALIC}>
         ∴ {isComplete ? "Thinking..." : "Thinking..."}
-      </Text>
-      <Box marginLeft={2} marginTop={1}>
-        <Text color="gray" italic>
+      </text>
+      <box marginLeft={2} marginTop={1}>
+        <text fg="gray" attributes={TextAttributes.ITALIC}>
           {text}
-        </Text>
-      </Box>
-    </Box>
+        </text>
+      </box>
+    </box>
   );
 });
 
@@ -162,6 +184,7 @@ function renderPart(
     options;
 
   if (isToolUIPart(part)) {
+    if (part.state === "input-streaming") return null;
     return (
       <ToolPartWrapper
         key={key}
@@ -181,6 +204,7 @@ function renderPart(
           key={key}
           text={part.text}
           isExpanded={isExpanded}
+          isStreaming={isStreaming}
           timestamp={timestamp}
           model={model}
         />
@@ -214,36 +238,38 @@ const UserMessage = memo(function UserMessage({
   ).length;
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
       {imageCount > 0 && (
-        <Box
+        <box
           backgroundColor="#333333"
           paddingLeft={1}
           paddingRight={1}
           alignSelf="flex-start"
+          flexDirection="row"
         >
-          <Text color="#666666">❯ </Text>
-          <Text color="blue">
+          <text fg="#666666">❯ </text>
+          <text fg="blue">
             {imageCount === 1
               ? "[1 image attached]"
               : `[${imageCount} images attached]`}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
       {text && (
-        <Box
+        <box
           backgroundColor="#333333"
           paddingLeft={1}
           paddingRight={1}
           alignSelf="flex-start"
+          flexDirection="row"
         >
-          <Text color="#666666">❯ </Text>
-          <Text color="white" bold>
+          <text fg="#666666">❯ </text>
+          <text fg="white" attributes={TextAttributes.BOLD}>
             {text}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )}
-    </Box>
+    </box>
   );
 });
 
@@ -303,6 +329,9 @@ const AssistantMessage = memo(function AssistantMessage({
     let taskGroupStartIndex = 0;
 
     message.parts.forEach((part, index) => {
+      if (isToolUIPart(part) && part.state === "input-streaming") {
+        return;
+      }
       if (isToolUIPart(part) && part.type === "tool-task") {
         if (currentTaskGroup.length === 0) {
           taskGroupStartIndex = index;
@@ -335,7 +364,7 @@ const AssistantMessage = memo(function AssistantMessage({
   }, [message.parts]);
 
   return (
-    <Box flexDirection="column">
+    <box flexDirection="column">
       <ReasoningTracker
         messageId={message.id}
         hasReasoning={hasReasoning}
@@ -343,10 +372,14 @@ const AssistantMessage = memo(function AssistantMessage({
       />
       {renderGroups.map((group) => {
         if (group.type === "task-group") {
+          const visibleTasks = group.tasks.filter(
+            (task) => task.state !== "input-streaming",
+          );
+          if (visibleTasks.length === 0) return null;
           return (
             <TaskGroupView
               key={`task-group-${group.startIndex}`}
-              taskParts={group.tasks}
+              taskParts={visibleTasks}
               isStreaming={isStreaming}
             />
           );
@@ -360,7 +393,7 @@ const AssistantMessage = memo(function AssistantMessage({
           model,
         });
       })}
-    </Box>
+    </box>
   );
 });
 
@@ -403,7 +436,7 @@ const MessagesList = memo(function MessagesList({
   isExpanded: boolean;
 }) {
   return (
-    <Box flexDirection="column">
+    <box flexDirection="column">
       {messages.map((message, index) => (
         <Message
           key={message.id || `msg-${index}`}
@@ -413,7 +446,7 @@ const MessagesList = memo(function MessagesList({
           isExpanded={isExpanded}
         />
       ))}
-    </Box>
+    </box>
   );
 });
 
@@ -424,9 +457,9 @@ const ErrorDisplay = memo(function ErrorDisplay({
 }) {
   if (!error) return null;
   return (
-    <Box marginTop={1}>
-      <Text color="red">Error: {error.message}</Text>
-    </Box>
+    <box marginTop={1}>
+      <text fg="red">Error: {error.message}</text>
+    </box>
   );
 });
 
@@ -436,11 +469,7 @@ function useStatusText(messages: TUIAgentUIMessage[]): string {
     if (lastMessage?.role === "assistant") {
       for (let i = lastMessage.parts.length - 1; i >= 0; i--) {
         const p = lastMessage.parts[i];
-        if (
-          p &&
-          isToolUIPart(p) &&
-          (p.state === "input-available" || p.state === "input-streaming")
-        ) {
+        if (p && isToolUIPart(p) && p.state === "input-available") {
           return `${getToolName(p)}...`;
         }
       }
@@ -496,34 +525,69 @@ const StreamingStatusBar = memo(function StreamingStatusBar({
   );
 });
 
+const ClipboardToast = memo(function ClipboardToast({
+  notice,
+}: {
+  notice: string;
+}) {
+  const words = notice.split(" ");
+  const primary = words[0] ?? notice;
+  const secondary = words.slice(1).join(" ");
+
+  return (
+    <box
+      position="absolute"
+      top={1}
+      right={2}
+      zIndex={1000}
+      flexDirection="row"
+      flexWrap="no-wrap"
+      paddingLeft={2}
+      paddingRight={2}
+      paddingTop={0}
+      paddingBottom={0}
+      border
+      borderStyle="rounded"
+      borderColor="#2f7a3d"
+      backgroundColor="#0f1411"
+    >
+      <text fg="#8fd694">✓</text>
+      <text> </text>
+      <text fg="#d9dedc">{primary}</text>
+      {secondary.length > 0 ? <text fg="#7f8a85"> {secondary}</text> : null}
+    </box>
+  );
+});
+
 const InterruptedIndicator = memo(function InterruptedIndicator() {
   return (
-    <Box marginLeft={2}>
-      <Text color="gray">└ </Text>
-      <Text color="yellow">Interrupted</Text>
-      <Text color="gray"> · What should the agent do instead?</Text>
-    </Box>
+    <box marginLeft={2} flexDirection="row" flexWrap="no-wrap">
+      <text fg="gray">└ </text>
+      <text fg={PRIMARY_COLOR}>Interrupted</text>
+      <text fg="gray"> · What should the agent do instead?</text>
+    </box>
   );
 });
 
 const ExpandedViewIndicator = memo(function ExpandedViewIndicator() {
   return (
-    <Box
-      marginTop={1}
-      borderStyle="single"
-      borderColor="gray"
-      borderTop
-      borderBottom={false}
-      borderLeft={false}
-      borderRight={false}
-    >
-      <Text color="gray">Showing detailed transcript · ctrl+o to toggle</Text>
-    </Box>
+    <box marginTop={1} borderStyle="single" borderColor="gray" border={["top"]}>
+      <text fg="gray">Showing detailed transcript · ctrl+o to toggle</text>
+    </box>
   );
 });
 
 function AppContent({ options }: AppProps) {
-  const { exit } = useApp();
+  const renderer = useRenderer();
+  const lastCopiedSelectionRef = useRef<string | null>(null);
+  const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectionClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const scrollboxRef = useRef<ScrollBoxRenderable | null>(null);
+  const exit = useCallback(() => {
+    renderer.destroy();
+  }, [renderer]);
   const {
     chat,
     state,
@@ -539,6 +603,7 @@ function AppContent({ options }: AppProps) {
   const [wasInterrupted, setWasInterrupted] = useState(false);
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [resumeError, setResumeError] = useState<string | null>(null);
+  const [clipboardNotice, setClipboardNotice] = useState<string | null>(null);
 
   const {
     messages,
@@ -554,6 +619,50 @@ function AppContent({ options }: AppProps) {
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  useEffect(() => {
+    const handleSelection = (selection: Selection) => {
+      if (selection.isSelecting) return;
+      const selectedText = selection.getSelectedText();
+      if (selectedText.length === 0) {
+        lastCopiedSelectionRef.current = null;
+        return;
+      }
+      if (selectedText === lastCopiedSelectionRef.current) return;
+      lastCopiedSelectionRef.current = selectedText;
+
+      void (async () => {
+        const copied = await copyTextToClipboard(selectedText);
+        if (!copied) return;
+
+        if (noticeTimeoutRef.current) {
+          clearTimeout(noticeTimeoutRef.current);
+        }
+        setClipboardNotice("Copied to clipboard");
+        noticeTimeoutRef.current = setTimeout(() => {
+          setClipboardNotice(null);
+        }, 1500);
+
+        if (selectionClearTimeoutRef.current) {
+          clearTimeout(selectionClearTimeoutRef.current);
+        }
+        selectionClearTimeoutRef.current = setTimeout(() => {
+          renderer.clearSelection();
+        }, 120);
+      })();
+    };
+
+    renderer.on("selection", handleSelection);
+    return () => {
+      if (noticeTimeoutRef.current) {
+        clearTimeout(noticeTimeoutRef.current);
+      }
+      if (selectionClearTimeoutRef.current) {
+        clearTimeout(selectionClearTimeoutRef.current);
+      }
+      renderer.off("selection", handleSelection);
+    };
+  }, [renderer]);
 
   // Clear interrupted state when streaming starts
   useEffect(() => {
@@ -646,6 +755,13 @@ function AppContent({ options }: AppProps) {
       };
     }, [messages]);
 
+  const inputVisible =
+    !isStreaming &&
+    !isExpanded &&
+    state.activePanel.type === "none" &&
+    !hasPendingQuestion &&
+    !hasPendingApproval;
+
   // Extract todos for standalone display when not streaming
   const todos = useMemo(
     () => extractTodosFromLastAssistantMessage(messages),
@@ -683,19 +799,45 @@ function AppContent({ options }: AppProps) {
     }
   }, [questionToolCallId, addToolOutput]);
 
-  useInput((input, key) => {
-    if (key.escape && isStreaming) {
+  useKeyboard((event) => {
+    const input = inputFromKey(event);
+    if (
+      inputVisible &&
+      !event.ctrl &&
+      !event.meta &&
+      (input.length > 0 ||
+        event.name === "backspace" ||
+        event.name === "delete" ||
+        event.name === "return" ||
+        event.name === "linefeed" ||
+        event.name === "tab")
+    ) {
+      const scrollbox = scrollboxRef.current;
+      if (scrollbox) {
+        const viewportHeight = scrollbox.viewport.height;
+        if (viewportHeight > 0) {
+          const maxScrollTop = Math.max(
+            0,
+            scrollbox.scrollHeight - viewportHeight,
+          );
+          if (scrollbox.scrollTop < maxScrollTop) {
+            scrollbox.scrollTo({ x: 0, y: scrollbox.scrollHeight });
+          }
+        }
+      }
+    }
+    if (event.name === "escape" && isStreaming) {
       stop();
       setWasInterrupted(true);
     }
-    if (input === "c" && key.ctrl) {
+    if (input === "c" && event.ctrl) {
       stop();
       exit();
     }
-    if (input === "o" && key.ctrl) {
+    if (input === "o" && event.ctrl) {
       toggleExpanded();
     }
-    if (input === "t" && key.ctrl) {
+    if (input === "t" && event.ctrl) {
       toggleTodoView();
     }
   });
@@ -782,17 +924,36 @@ function AppContent({ options }: AppProps) {
     [openPanel, loadSessions, setMessages, setSessionId, resetUsage],
   );
 
+  const formatContextLimit = useCallback((tokens: number) => {
+    if (tokens >= 1_000_000) {
+      return `${Math.round(tokens / 1_000_000)}m`;
+    }
+    if (tokens >= 1000) {
+      return `${Math.round(tokens / 1000)}k`;
+    }
+    return String(tokens);
+  }, []);
+
   // Memoize model options to prevent re-renders in SettingsPanel
   const modelOptions = useMemo(
     () =>
-      state.availableModels.map((m) => ({
-        id: m.id,
-        name: m.name,
-        meta: m.pricing
-          ? `${m.pricing.input} in · ${m.pricing.output} out`
-          : undefined,
-      })),
-    [state.availableModels],
+      state.availableModels.map((model) => {
+        const metaParts: string[] = [];
+        if (model.pricing) {
+          metaParts.push(
+            `${model.pricing.input} in · ${model.pricing.output} out`,
+          );
+        }
+        if (typeof model.contextLimit === "number") {
+          metaParts.push(`${formatContextLimit(model.contextLimit)} ctx`);
+        }
+        return {
+          id: model.id,
+          name: model.name,
+          meta: metaParts.length > 0 ? metaParts.join(" · ") : undefined,
+        };
+      }),
+    [formatContextLimit, state.availableModels],
   );
 
   // Memoize model selection handler to prevent re-renders
@@ -806,108 +967,125 @@ function AppContent({ options }: AppProps) {
 
   // Show message list with either approval panel or input box at bottom
   return (
-    <Box flexDirection="column" paddingLeft={1} paddingRight={1}>
-      <Header
-        name={options?.header?.name}
-        version={options?.header?.version}
-        model={
-          state.settings.modelId ?? options?.header?.model ?? defaultModelLabel
-        }
-        cwd={state.workingDirectory}
-      />
-
-      <MessagesList
-        messages={messages}
-        activeApprovalId={activeApprovalId}
-        isStreaming={isStreaming}
-        isExpanded={isExpanded}
-      />
-
-      {wasInterrupted && !isStreaming && <InterruptedIndicator />}
-
-      <ErrorDisplay error={error} />
-
-      {/* Show settings panel when active (replaces input) */}
-      {state.activePanel.type === "model-select" && (
-        <SettingsPanel
-          title="Select model"
-          description="Choose the AI model for this session"
-          options={modelOptions}
-          currentId={state.settings.modelId ?? ""}
-          onSelect={handleModelSelect}
-          onCancel={closePanel}
-        />
-      )}
-
-      {/* Show resume panel when active (replaces input) */}
-      {state.activePanel.type === "resume" && (
-        <>
-          {resumeError && (
-            <Box marginBottom={1}>
-              <Text color="red">{resumeError}</Text>
-            </Box>
-          )}
-          <ResumePanel
-            sessions={sessions}
-            currentBranch={state.currentBranch}
-            onSelect={handleSessionSelect}
-            onCancel={closePanel}
+    <box
+      flexDirection="column"
+      paddingTop={0.5}
+      paddingBottom={0.5}
+      paddingLeft={1}
+      paddingRight={1}
+      position="relative"
+    >
+      {clipboardNotice && <ClipboardToast notice={clipboardNotice} />}
+      <scrollbox
+        scrollY
+        stickyScroll
+        stickyStart="bottom"
+        flexGrow={1}
+        verticalScrollbarOptions={{ visible: false }}
+        horizontalScrollbarOptions={{ visible: false }}
+        ref={scrollboxRef}
+      >
+        <box flexDirection="column">
+          <Header
+            name={options?.header?.name}
+            version={options?.header?.version}
+            model={
+              state.settings.modelId ??
+              options?.header?.model ??
+              defaultModelLabel
+            }
+            cwd={state.workingDirectory}
           />
-        </>
-      )}
+          <MessagesList
+            messages={messages}
+            activeApprovalId={activeApprovalId}
+            isStreaming={isStreaming}
+            isExpanded={isExpanded}
+          />
 
-      {/* Show question panel when there's a pending question (replaces input) */}
-      {state.activePanel.type === "none" &&
-      hasPendingQuestion &&
-      pendingQuestionPart &&
-      questionToolCallId ? (
-        <QuestionPanel
-          questions={pendingQuestionPart.input.questions}
-          onSubmit={handleQuestionSubmit}
-          onCancel={handleQuestionCancel}
-        />
-      ) : /* Show approval panel when there's a pending approval (replaces status bar and input) */
-      state.activePanel.type === "none" &&
-        hasPendingApproval &&
-        activeApprovalId &&
-        approvalInfo &&
-        pendingToolPart ? (
-        <ApprovalPanel
-          approvalId={activeApprovalId}
-          toolType={approvalInfo.toolType}
-          toolCommand={approvalInfo.toolCommand}
-          toolDescription={approvalInfo.toolDescription}
-          dontAskAgainPattern={approvalInfo.dontAskAgainPattern}
-          toolPart={pendingToolPart}
-        />
-      ) : state.activePanel.type === "none" ? (
-        <>
-          {/* Show streaming status bar when streaming */}
-          {isStreaming && <StreamingStatusBar messages={messages} />}
+          {wasInterrupted && !isStreaming && <InterruptedIndicator />}
 
-          {/* Show standalone todo list when not streaming and has todos */}
-          {!isStreaming && todos && todos.length > 0 && (
-            <StandaloneTodoList todos={todos} isTodoVisible={isTodoVisible} />
-          )}
+          <ErrorDisplay error={error} />
 
-          {/* Show input box (disabled when streaming) */}
-          {!isExpanded && (
-            <InputBox
-              onSubmit={handleSubmit}
-              autoAcceptMode={state.autoAcceptMode}
-              onToggleAutoAccept={cycleAutoAcceptMode}
-              onCommandSelect={handleCommandSelect}
-              disabled={isStreaming}
-              inputTokens={state.usage.inputTokens ?? 0}
-              contextLimit={state.contextLimit}
-              pasteCollapseLineThreshold={pasteCollapseLineThreshold}
+          {state.activePanel.type === "model-select" && (
+            <SettingsPanel
+              title="Select model"
+              description="Choose the AI model for this session"
+              options={modelOptions}
+              currentId={state.settings.modelId ?? ""}
+              onSelect={handleModelSelect}
+              onCancel={closePanel}
             />
           )}
-        </>
-      ) : null}
 
-      {isExpanded && <ExpandedViewIndicator />}
-    </Box>
+          {state.activePanel.type === "resume" && (
+            <>
+              {resumeError && (
+                <box marginBottom={1}>
+                  <text fg="red">{resumeError}</text>
+                </box>
+              )}
+              <ResumePanel
+                sessions={sessions}
+                currentBranch={state.currentBranch}
+                onSelect={handleSessionSelect}
+                onCancel={closePanel}
+              />
+            </>
+          )}
+
+          {state.activePanel.type === "none" &&
+          hasPendingQuestion &&
+          pendingQuestionPart &&
+          questionToolCallId ? (
+            <QuestionPanel
+              questions={pendingQuestionPart.input.questions}
+              onSubmit={handleQuestionSubmit}
+              onCancel={handleQuestionCancel}
+            />
+          ) : state.activePanel.type === "none" &&
+            hasPendingApproval &&
+            activeApprovalId &&
+            approvalInfo &&
+            pendingToolPart ? (
+            <ApprovalPanel
+              approvalId={activeApprovalId}
+              toolType={approvalInfo.toolType}
+              toolCommand={approvalInfo.toolCommand}
+              toolDescription={approvalInfo.toolDescription}
+              dontAskAgainPattern={approvalInfo.dontAskAgainPattern}
+              toolPart={pendingToolPart}
+            />
+          ) : state.activePanel.type === "none" ? (
+            <>
+              {isStreaming && <StreamingStatusBar messages={messages} />}
+
+              {!isStreaming && todos && todos.length > 0 && (
+                <StandaloneTodoList
+                  todos={todos}
+                  isTodoVisible={isTodoVisible}
+                />
+              )}
+
+              {!isExpanded && (
+                <InputBox
+                  onSubmit={handleSubmit}
+                  autoAcceptMode={state.autoAcceptMode}
+                  onToggleAutoAccept={cycleAutoAcceptMode}
+                  onCommandSelect={handleCommandSelect}
+                  disabled={isStreaming}
+                  inputTokens={state.usage.inputTokens ?? 0}
+                  contextLimit={state.contextLimit}
+                  pasteCollapseLineThreshold={pasteCollapseLineThreshold}
+                />
+              )}
+            </>
+          ) : null}
+
+          {isExpanded && <ExpandedViewIndicator />}
+        </box>
+      </scrollbox>
+    </box>
   );
 }
 

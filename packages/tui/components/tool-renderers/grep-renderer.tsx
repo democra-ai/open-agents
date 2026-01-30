@@ -1,10 +1,10 @@
 import React from "react";
-import { Text } from "ink";
 import type { ToolRendererProps } from "../../lib/render-tool";
 import { ToolLayout } from "./shared";
 
 export function GrepRenderer({ part, state }: ToolRendererProps<"tool-grep">) {
-  const pattern = part.input?.pattern ?? "...";
+  const isInputReady = part.state !== "input-streaming";
+  const pattern = isInputReady ? (part.input?.pattern ?? "...") : "...";
   const matches =
     part.state === "output-available" ? part.output?.matches : undefined;
 
@@ -12,9 +12,7 @@ export function GrepRenderer({ part, state }: ToolRendererProps<"tool-grep">) {
     <ToolLayout
       name="Grep"
       summary={`"${pattern}"`}
-      output={
-        matches && <Text color="white">Found {matches.length} matches</Text>
-      }
+      output={matches && <text fg="white">Found {matches.length} matches</text>}
       state={state}
     />
   );

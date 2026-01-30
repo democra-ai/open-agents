@@ -1,8 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Box, Text } from "ink";
-import { getToolName, isToolUIPart } from "ai";
-import type { TaskToolUIPart, SubagentUIMessage } from "@open-harness/agent";
+import type { SubagentUIMessage, TaskToolUIPart } from "@open-harness/agent";
 import { formatTokens } from "@open-harness/shared";
+import { TextAttributes } from "@opentui/core";
+import { useTerminalDimensions } from "@opentui/react";
+import { getToolName, isToolUIPart } from "ai";
+import React, { useEffect, useRef, useState } from "react";
+import { PRIMARY_COLOR } from "../lib/colors";
+import { truncateText } from "../lib/truncate";
 
 type SubagentMessagePart = SubagentUIMessage["parts"][number];
 
@@ -18,7 +21,7 @@ function TaskSpinner() {
     return () => clearInterval(timer);
   }, []);
 
-  return <Text color="gray">{SPINNER_FRAMES[frame]}</Text>;
+  return <text fg="gray">{SPINNER_FRAMES[frame]}</text>;
 }
 
 function FlashingDot() {
@@ -31,7 +34,7 @@ function FlashingDot() {
     return () => clearInterval(timer);
   }, []);
 
-  return <Text color="gray">{visible ? "●" : " "}</Text>;
+  return <text fg="gray">{visible ? "●" : " "}</text>;
 }
 
 function formatTime(seconds: number): string {
@@ -123,8 +126,7 @@ function getToolSummary(part: SubagentMessagePart): string {
     case "tool-glob":
       return part.input?.pattern ? `"${part.input.pattern}"` : "";
     case "tool-bash": {
-      const cmd = part.input?.command ?? "";
-      return cmd.length > 40 ? cmd.slice(0, 40) + "..." : cmd;
+      return part.input?.command ?? "";
     }
     default:
       return "";
@@ -160,16 +162,16 @@ function TaskStatusIndicator({ status }: { status: TaskStatus }) {
       return <FlashingDot />;
     case "approval-requested":
       // Static white circle for approval needed
-      return <Text color="white">●</Text>;
+      return <text fg="white">●</text>;
     case "complete":
-      return <Text color="green">✓</Text>;
+      return <text fg="green">✓</text>;
     case "interrupted":
-      return <Text color="yellow">○</Text>;
+      return <text fg={PRIMARY_COLOR}>○</text>;
     case "error":
     case "denied":
-      return <Text color="red">✗</Text>;
+      return <text fg="red">✗</text>;
     default:
-      return <Text color="gray">●</Text>;
+      return <text fg="gray">●</text>;
   }
 }
 
@@ -188,6 +190,8 @@ function TaskItem({
   const toolCount = countTaskTools(part);
   const tokenCount = getTaskTokens(part);
   const lastTool = getLastToolInfo(part);
+  const { width } = useTerminalDimensions();
+  const terminalWidth = width ?? 80;
 
   const desc = part.input?.task ?? "Task";
 
@@ -221,44 +225,52 @@ function TaskItem({
       ? `${lastTool.name}(${lastTool.summary})`
       : lastTool.name;
   }
+  const toolCountText = ` - ${toolCount} tool${toolCount !== 1 ? "s" : ""}`;
+  const tokenText =
+    tokenCount !== null ? ` - ${formatTokens(tokenCount)} tokens` : "";
+  const approvalText = approvalRequested ? " [NEEDS APPROVAL]" : "";
+  const timeText =
+    isRunning && elapsedSeconds > 0 ? ` - ${formatTime(elapsedSeconds)}` : "";
+  const suffixText = `${toolCountText}${tokenText}${approvalText}${timeText}`;
+  const prefixLength = `${treeChar} `.length + 2;
+  const maxDescWidth = Math.max(
+    10,
+    terminalWidth - prefixLength - suffixText.length,
+  );
+  const displayDesc = truncateText(desc, maxDescWidth);
+  const nestedPrefixLength = `${continueChar}└ `.length;
+  const maxNestedWidth = Math.max(10, terminalWidth - nestedPrefixLength);
+  const displayNestedStatus = nestedStatus
+    ? truncateText(nestedStatus, maxNestedWidth)
+    : "";
 
   return (
-    <Box flexDirection="column">
+    <box flexDirection="column">
       {/* Task row */}
-      <Box>
-        <Text color="gray">{treeChar} </Text>
+      <box flexDirection="row">
+        <text fg="gray">{treeChar} </text>
         <TaskStatusIndicator status={status} />
-        <Text> </Text>
-        <Text
-          color={status === "error" || status === "denied" ? "red" : "white"}
-        >
-          {desc}
-        </Text>
-        <Text color="gray">
-          {" "}
-          - {toolCount} tool{toolCount !== 1 ? "s" : ""}
-          {tokenCount !== null && ` - ${formatTokens(tokenCount)} tokens`}
-        </Text>
-        {approvalRequested && <Text color="yellow"> [NEEDS APPROVAL]</Text>}
-        {isRunning && elapsedSeconds > 0 && (
-          <Text color="gray"> - {formatTime(elapsedSeconds)}</Text>
-        )}
-      </Box>
+        <text> </text>
+        <text fg={status === "error" || status === "denied" ? "red" : "white"}>
+          {displayDesc}
+        </text>
+        <text fg="gray">{suffixText}</text>
+      </box>
 
       {/* Nested status line */}
       {nestedStatus && (
-        <Box>
-          <Text color="gray">{continueChar}└ </Text>
-          <Text
-            color={
-              denied ? "red" : status === "interrupted" ? "yellow" : "gray"
+        <box flexDirection="row">
+          <text fg="gray">{continueChar}└ </text>
+          <text
+            fg={
+              denied ? "red" : status === "interrupted" ? PRIMARY_COLOR : "gray"
             }
           >
-            {nestedStatus}
-          </Text>
-        </Box>
+            {displayNestedStatus}
+          </text>
+        </box>
       )}
-    </Box>
+    </box>
   );
 }
 
@@ -268,7 +280,9 @@ type TaskGroupViewProps = {
 };
 
 export function TaskGroupView({ taskParts, isStreaming }: TaskGroupViewProps) {
+  const { width } = useTerminalDimensions();
   if (taskParts.length === 0) return null;
+  const terminalWidth = width ?? 80;
 
   // Count different states
   const hasApprovalPending = taskParts.some(
@@ -296,30 +310,32 @@ export function TaskGroupView({ taskParts, isStreaming }: TaskGroupViewProps) {
   } else {
     headerText = `Running ${taskParts.length} Task agent${taskParts.length > 1 ? "s" : ""}...`;
   }
+  const headerMaxWidth = Math.max(10, terminalWidth - 4);
+  const displayHeaderText = truncateText(headerText, headerMaxWidth);
 
   return (
-    <Box flexDirection="column" marginTop={1} marginBottom={1}>
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
       {/* Header */}
-      <Box>
+      <box flexDirection="row">
         {allComplete ? (
-          <Text color="green">● </Text>
+          <text fg="green">● </text>
         ) : hasInterrupted && runningCount === 0 ? (
-          <Text color="yellow">○ </Text>
+          <text fg={PRIMARY_COLOR}>○ </text>
         ) : hasApprovalPending && runningCount === 0 ? (
-          <Text color="white">● </Text>
+          <text fg="white">● </text>
         ) : (
           <>
             <TaskSpinner />
-            <Text> </Text>
+            <text> </text>
           </>
         )}
-        <Text bold color="white">
-          {headerText}
-        </Text>
-      </Box>
+        <text fg="white" attributes={TextAttributes.BOLD}>
+          {displayHeaderText}
+        </text>
+      </box>
 
       {/* Task list */}
-      <Box flexDirection="column">
+      <box flexDirection="column">
         {taskParts.map((part, index) => (
           <TaskItem
             key={part.toolCallId}
@@ -328,7 +344,7 @@ export function TaskGroupView({ taskParts, isStreaming }: TaskGroupViewProps) {
             isStreaming={isStreaming}
           />
         ))}
-      </Box>
-    </Box>
+      </box>
+    </box>
   );
 }

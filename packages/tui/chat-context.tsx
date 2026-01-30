@@ -1,25 +1,25 @@
+import { Chat } from "@ai-sdk/react";
+import { getContextLimit, type SkillMetadata } from "@open-harness/agent";
+import { isToolUIPart, type LanguageModelUsage, type UIMessage } from "ai";
 import React, {
   createContext,
-  useContext,
-  useState,
-  useMemo,
-  useCallback,
-  useRef,
   type ReactNode,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
 } from "react";
-import { type LanguageModelUsage, type UIMessage, isToolUIPart } from "ai";
-import { Chat } from "@ai-sdk/react";
-import { createAgentTransport } from "./transport";
 import { tuiAgent } from "./config";
+import { AVAILABLE_MODELS, type GatewayFn, type ModelInfo } from "./lib/models";
+import type { Settings } from "./lib/settings";
+import { createAgentTransport } from "./transport";
 import type {
+  ApprovalRule,
+  AutoAcceptMode,
   TUIAgentCallOptions,
   TUIAgentUIMessage,
-  AutoAcceptMode,
-  ApprovalRule,
 } from "./types";
-import type { Settings } from "./lib/settings";
-import { AVAILABLE_MODELS, type ModelInfo, type GatewayFn } from "./lib/models";
-import { getContextLimit, type SkillMetadata } from "@open-harness/agent";
 
 export type PanelState =
   | { type: "none" }
@@ -231,10 +231,15 @@ export function ChatProvider({
   }
 
   const effectiveModel = settings.modelId ?? model ?? "";
-  const contextLimit = useMemo(
-    () => getContextLimit(effectiveModel),
-    [effectiveModel],
-  );
+  const contextLimit = useMemo(() => {
+    const modelEntry = availableModels?.find(
+      (availableModel) => availableModel.id === effectiveModel,
+    );
+    if (typeof modelEntry?.contextLimit === "number") {
+      return modelEntry.contextLimit;
+    }
+    return getContextLimit(effectiveModel);
+  }, [availableModels, effectiveModel]);
 
   const handleUsageUpdate = useCallback((newUsage: LanguageModelUsage) => {
     setUsage(newUsage);
@@ -309,14 +314,41 @@ export function ChatProvider({
     ],
   );
 
+  const abortedMessageIdRef = useRef<string | null>(null);
+  // Prevent auto-submit loops from immediately re-firing after ESC aborts.
+  const shouldAutoSubmitWithAbort = useCallback(
+    ({ messages }: { messages: UIMessage[] }) => {
+      const lastMessage = messages[messages.length - 1];
+      const abortedMessageId = abortedMessageIdRef.current;
+
+      if (abortedMessageId && lastMessage?.id !== abortedMessageId) {
+        abortedMessageIdRef.current = null;
+      }
+
+      if (abortedMessageId && lastMessage?.id === abortedMessageId) {
+        return false;
+      }
+
+      return shouldAutoSubmit({ messages });
+    },
+    [],
+  );
+
   const chat = useMemo(
     () =>
       new Chat<TUIAgentUIMessage>({
         transport,
-        sendAutomaticallyWhen: shouldAutoSubmit,
+        sendAutomaticallyWhen: shouldAutoSubmitWithAbort,
+        onFinish: ({ message, isAbort }) => {
+          if (isAbort) {
+            abortedMessageIdRef.current = message?.id ?? null;
+            return;
+          }
+          abortedMessageIdRef.current = null;
+        },
         messages: initialMessagesRef.current,
       }),
-    [transport],
+    [transport, shouldAutoSubmitWithAbort],
   );
 
   const skills = useMemo(
